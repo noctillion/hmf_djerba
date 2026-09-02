@@ -26,6 +26,9 @@ class main(plugin_base):
     # TODO standardize this constant, see ticket GCGI-1290
     INPUT_PARAMS_ONCOTREE_CODE = 'oncotree_code'
 
+    # Sentinel for a run whose pipeline does not produce CHORD
+    HRD_PATH_NOT_FOUND = 'HRD file not available'
+
     # For MSI file
     MSI_RESULTS_SUFFIX = '.recalibrated.msi.booted'
     MSI_WORKFLOW = 'msisensor'
@@ -76,6 +79,9 @@ class main(plugin_base):
         w = self.update_wrapper_if_null(w, dsi, glc.TUMOUR_ID)
         w = self.update_wrapper_if_null(w, dpi, glc.MSI_FILE, glc.MSI_WORKFLOW)
         w = self.update_wrapper_if_null(w, dpi, glc.CHORD_PATH, glc.HRD_WORKFLOW)
+        if w.get_my_string(glc.CHORD_PATH) == 'None':
+            self.logger.debug('No CHORD file; HRD will be reported as unavailable')
+            w.set_my_param(glc.CHORD_PATH, self.HRD_PATH_NOT_FOUND)
         return w.get_config()
 
     def extract(self, config):
@@ -96,17 +102,22 @@ class main(plugin_base):
         
         # GET HRD
         hrd = hrd_processor(self.log_level, self.log_path)
-        results[glc.BIOMARKERS][glc.HRD] = hrd.run(
-            work_dir,
-            wrapper.get_my_string(glc.CHORD_PATH)
-        )
+        hrd_ok = False
+        if wrapper.get_my_string(glc.CHORD_PATH) == self.HRD_PATH_NOT_FOUND:
+            results[glc.CAN_REPORT_HRD] = False
+            results[glc.CANT_REPORT_HRD_REASON] = self.HRD_PATH_NOT_FOUND
+        else:
+            results[glc.BIOMARKERS][glc.HRD] = hrd.run(
+                work_dir,
+                wrapper.get_my_string(glc.CHORD_PATH)
+            )
 
-        # evaluate HRD reportability
-        hrd_ok, cant_report_hrd_reason = self.evaluate_reportability(
-            results[glc.BIOMARKERS][glc.HRD]['Genomic biomarker alteration']
-        )
-        results[glc.CAN_REPORT_HRD] = hrd_ok
-        results[glc.CANT_REPORT_HRD_REASON] = cant_report_hrd_reason
+            # evaluate HRD reportability
+            hrd_ok, cant_report_hrd_reason = self.evaluate_reportability(
+                results[glc.BIOMARKERS][glc.HRD]['Genomic biomarker alteration']
+            )
+            results[glc.CAN_REPORT_HRD] = hrd_ok
+            results[glc.CANT_REPORT_HRD_REASON] = cant_report_hrd_reason
 
         # evaluate biomarkers
         results[glc.BIOMARKERS][glc.MSI] = msi_processor(self.log_level, self.log_path).run(
@@ -119,12 +130,15 @@ class main(plugin_base):
         # Annotate genomic biomarkers for therapy info/merge inputs
         annotated_maf = self.annotate_oncokb(work_dir, wrapper)
         merge_inputs = self.get_oncokb_merge_inputs(annotated_maf)
-        hrd_annotation = hrd.annotate_NCCN(
-            results[glc.BIOMARKERS][glc.HRD]['Genomic biomarker alteration'],
-            wrapper.get_my_string(oncokb_constants.ONCOTREE_CODE),
-            plugin_data_dir,
-            directory_finder(self.log_level, self.log_path).get_data_dir()
-        )
+        if wrapper.get_my_string(glc.CHORD_PATH) == self.HRD_PATH_NOT_FOUND:
+            hrd_annotation = None
+        else:
+            hrd_annotation = hrd.annotate_NCCN(
+                results[glc.BIOMARKERS][glc.HRD]['Genomic biomarker alteration'],
+                wrapper.get_my_string(oncokb_constants.ONCOTREE_CODE),
+                plugin_data_dir,
+                directory_finder(self.log_level, self.log_path).get_data_dir()
+            )
         if hrd_annotation:
             if hrd_ok:
                 merge_inputs.append(hrd_annotation)
